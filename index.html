@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Bronchoscopy Simulator</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; color: #00ffcc; font-family: 'Courier New', Courier, monospace; }
+        #canvas-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; }
+        
+        /* Endoscope Vignette Effect */
+        .vignette {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: radial-gradient(circle at center, transparent 45%, rgba(0,0,0,0.8) 75%, rgba(0,0,0,1) 100%);
+            pointer-events: none;
+            z-index: 10;
+        }
+
+        /* Scope overlay grids and indicators */
+        .scope-crosshair {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            width: 350px; height: 350px;
+            border: 1px solid rgba(255, 255, 255, 0.15);
+            border-radius: 50%;
+            pointer-events: none;
+            z-index: 11;
+        }
+        .scope-crosshair::before, .scope-crosshair::after {
+            content: ''; position: absolute; background: rgba(255, 255, 255, 0.3);
+        }
+        .scope-crosshair::before { top: 50%; left: 45%; width: 10%; height: 1px; }
+        .scope-crosshair::after { left: 50%; top: 45%; height: 10%; width: 1px; }
+
+        /* UI Overlays */
+        #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 20; pointer-events: none; padding: 20px; display: flex; justify-content: space-between; }
+        .panel { background: rgba(0, 20, 10, 0.7); border: 1px solid #00ffcc; border-radius: 8px; padding: 15px; pointer-events: auto; backdrop-filter: blur(4px); }
+        
+        /* Warning text animation */
+        @keyframes flash { 0% { color: #ff3333; text-shadow: 0 0 10px #ff3333; } 50% { color: #550000; text-shadow: none; } 100% { color: #ff3333; text-shadow: 0 0 10px #ff3333; } }
+        .warning { animation: flash 0.5s infinite; font-weight: bold; }
+        .hidden { display: none !important; }
+
+        /* Loading Screen */
+        #loading { position: absolute; top:0; left:0; width: 100%; height: 100%; background: #000; z-index: 50; display: flex; flex-direction: column; align-items: center; justify-content: center; transition: opacity 1s ease-out; }
+        .spinner { width: 50px; height: 50px; border: 5px solid #333; border-top: 5px solid #00ffcc; border-radius: 50%; animation: spin 1s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+    <!-- Three.js Import Map -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body>
+
+    <!-- Loading Screen -->
+    <div id="loading">
+        <div class="spinner mb-4"></div>
+        <h2 class="text-2xl text-[#00ffcc] tracking-widest uppercase">Initializing Bronchoscopy...</h2>
+        <p class="text-gray-400 mt-2">Loading and Processing FBX Airway Model</p>
+        <p id="loading-error" class="text-red-500 mt-4 hidden max-w-md text-center"></p>
+    </div>
+
+    <!-- 3D Canvas -->
+    <div id="canvas-container"></div>
+    <div class="vignette"></div>
+    <div class="scope-crosshair"></div>
+
+    <!-- UI Overlay -->
+    <div id="ui-layer">
+        
+        <!-- Left Panel: Vitals & Status -->
+        <div class="panel flex flex-col w-64 h-fit gap-4 shadow-[0_0_15px_rgba(0,255,204,0.2)]">
+            <div class="flex items-center justify-between border-b border-[#00ffcc] pb-2">
+                <span class="text-sm uppercase tracking-wider text-gray-300">REC / OLYMPUS BF-P190</span>
+                <div class="w-3 h-3 bg-red-500 rounded-full animate-pulse"></div>
+            </div>
+            
+            <div>
+                <div class="text-xs text-gray-400">HEART RATE</div>
+                <div class="text-4xl text-green-400 font-bold" id="ui-hr">78 <span class="text-sm">bpm</span></div>
+            </div>
+            
+            <div>
+                <div class="text-xs text-gray-400">SpO2</div>
+                <div class="text-4xl text-blue-400 font-bold" id="ui-spo2">98 <span class="text-sm">%</span></div>
+            </div>
+
+            <div class="mt-4 pt-4 border-t border-[#00ffcc] border-opacity-30">
+                <div class="text-xs text-gray-400">INSERTION DEPTH</div>
+                <div class="text-2xl text-white font-bold" id="ui-depth">0.0 <span class="text-sm">cm</span></div>
+            </div>
+
+            <div id="ui-warning" class="mt-2 text-center text-sm hidden warning">
+                ⚠ WALL CONTACT - MOVEMENT BLOCKED
+            </div>
+        </div>
+
+        <!-- Right Panel: Controls & Settings -->
+        <div class="flex flex-col gap-4">
+            <div class="panel w-64 text-sm shadow-[0_0_15px_rgba(0,255,204,0.2)]">
+                <h3 class="text-[#00ffcc] font-bold border-b border-[#00ffcc] pb-2 mb-2 uppercase">Endoscope Controls</h3>
+                <ul class="text-gray-300 space-y-3 mb-4">
+                    <li><strong class="text-white text-base">W / S</strong> <br>Advance / Withdraw</li>
+                    <li><strong class="text-white text-base">A / D</strong> <br>Deflect Tip Left / Right</li>
+                    <li><strong class="text-white text-base">↑ / ↓</strong> <br>Deflect Tip Up / Down</li>
+                    <li><strong class="text-white text-base">Mouse</strong> <br>Click & Drag to Look</li>
+                </ul>
+                <div class="text-xs text-red-400 italic mt-2">Collision barriers are ACTIVE. You cannot pass through walls.</div>
+            </div>
+
+            <div class="panel w-64 text-sm">
+                <h3 class="text-[#00ffcc] font-bold border-b border-[#00ffcc] pb-2 mb-2 uppercase">Recalibration</h3>
+                <p class="text-xs text-gray-400 mb-3">If you get lost, jump the camera to the start of the airway.</p>
+                <button id="btn-reset-y" class="w-full bg-[#004433] hover:bg-[#00ffcc] hover:text-black text-[#00ffcc] py-2 px-2 rounded border border-[#00ffcc] transition-colors font-bold tracking-wide mb-2">
+                    JUMP TO TOP (Y-AXIS)
+                </button>
+                <button id="btn-reset-z" class="w-full bg-[#004433] hover:bg-[#00ffcc] hover:text-black text-[#00ffcc] py-2 px-2 rounded border border-[#00ffcc] transition-colors font-bold tracking-wide">
+                    JUMP TO TOP (Z-AXIS)
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Application Logic -->
+    <script type="module">
+        import * as THREE from 'three';
+        import { FBXLoader } from 'three/addons/loaders/FBXLoader.js'; // Updated to FBXLoader
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        // --- Configuration & State ---
+        const config = {
+            moveSpeed: 0.15, // Slightly slower for precise control
+            rotateSpeed: 0.025,
+            wallThreshold: 0.4 // Reduced to allow exploring narrower bronchi without getting stuck
+        };
+        
+        const state = {
+            keys: { w: false, a: false, s: false, d: false, ArrowUp: false, ArrowDown: false, ArrowLeft: false, ArrowRight: false },
+            hr: 78,
+            spo2: 98,
+            startPos: new THREE.Vector3(0, 0, 0),
+            ready: false
+        };
+
+        // --- DOM Elements ---
+        const elLoading = document.getElementById('loading');
+        const elLoadingError = document.getElementById('loading-error');
+        const elHr = document.getElementById('ui-hr');
+        const elSpo2 = document.getElementById('ui-spo2');
+        const elDepth = document.getElementById('ui-depth');
+        const elWarning = document.getElementById('ui-warning');
+
+        // --- Three.js Setup ---
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        
+        scene.background = new THREE.Color(0x0a0000);
+        scene.fog = new THREE.FogExp2(0x1a0000, 0.05);
+
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.05, 200);
+        
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        container.appendChild(renderer.domElement);
+
+        // Scope Lighting
+        scene.add(camera);
+        const endoLight = new THREE.PointLight(0xfff5e6, 3, 50); 
+        endoLight.position.set(0, 0, 0);
+        camera.add(endoLight);
+        const ambientLight = new THREE.AmbientLight(0x401010, 1.0); 
+        scene.add(ambientLight);
+
+        // --- Model Loading & Procedural Fallback ---
+        let airwayModel = null;
+        let bboxCenter = new THREE.Vector3();
+        let bboxSize = new THREE.Vector3();
+        const airwayGroup = new THREE.Group();
+
+        const tissueMaterial = new THREE.MeshStandardMaterial({
+            color: 0xff7777,
+            emissive: 0x220000,
+            roughness: 0.4,
+            metalness: 0.1,
+            side: THREE.DoubleSide // CRITICAL: Ensure raycaster hits inside faces
+        });
+
+        // Graceful Procedural Generator
+        function buildProceduralAnatomy() {
+            scene.add(airwayGroup);
+            function createBronchus(points, radius) {
+                const curve = new THREE.CatmullRomCurve3(points);
+                const geometry = new THREE.TubeGeometry(curve, 64, radius, 24, false);
+                const mat = tissueMaterial.clone();
+                mat.side = THREE.BackSide; // Render inside
+                const mesh = new THREE.Mesh(geometry, mat);
+                airwayGroup.add(mesh);
+                return mesh;
+            }
+
+            // Trachea
+            createBronchus([
+                new THREE.Vector3(0, 0, 2), new THREE.Vector3(0, 0, -5),
+                new THREE.Vector3(0, -0.5, -10), new THREE.Vector3(0, -1, -14)
+            ], 1.8);
+            // Right Main Bronchus
+            createBronchus([
+                new THREE.Vector3(0, -1, -13.5), new THREE.Vector3(1.5, -2, -18), new THREE.Vector3(3, -4, -22)
+            ], 1.2);
+            // Left Main Bronchus
+            createBronchus([
+                new THREE.Vector3(0, -1, -13.5), new THREE.Vector3(-2, -1.5, -19), new THREE.Vector3(-4, -2, -24)
+            ], 1.0);
+
+            airwayModel = airwayGroup;
+            config.wallThreshold = 0.5; // Scale collision threshold for procedural model
+
+            camera.position.set(0, 0, 0);
+            camera.lookAt(0, 0, -10);
+            state.startPos.copy(camera.position);
+            updateOrbitTarget();
+            
+            state.ready = true;
+            elLoading.style.opacity = '0';
+            setTimeout(() => elLoading.classList.add('hidden'), 1000);
+        }
+
+        const loader = new FBXLoader(); // Updated to FBXLoader
+
+        // Updated URL to fetch the new FBX file from GitHub.
+        // I noticed you uploaded a file named "longen met bronchiaalboom.fbx". I am assuming you have placed it in the root of your repo.
+        // It is recommended to remove spaces in file names for easier URL encoding.
+        const modelUrl = 'https://raw.githubusercontent.com/jchance-ctrl/lopa/main/longen%20met%20bronchiaalboom.fbx'; 
+
+        loader.load(modelUrl, (object) => { // FBXLoader returns a Group or Mesh, not a GLTF object
+            airwayModel = object;
+            
+            airwayModel.traverse((child) => {
+                if (child.isMesh) {
+                    child.material = tissueMaterial;
+                }
+            });
+
+            // Auto-Scale normalization (Forces the model to be exactly 100 units long)
+            const initialBox = new THREE.Box3().setFromObject(airwayModel);
+            const initialSize = new THREE.Vector3();
+            initialBox.getSize(initialSize);
+            const maxDim = Math.max(initialSize.x, initialSize.y, initialSize.z);
+            const scaleFactor = 100 / maxDim;
+            airwayModel.scale.setScalar(scaleFactor);
+            airwayModel.updateMatrixWorld();
+
+            // Center the model precisely
+            const box = new THREE.Box3().setFromObject(airwayModel);
+            box.getCenter(bboxCenter);
+            box.getSize(bboxSize);
+            airwayModel.position.sub(bboxCenter);
+
+            scene.add(airwayModel);
+            
+            alignCameraY(); // Default start
+            state.ready = true;
+            elLoading.style.opacity = '0';
+            setTimeout(() => elLoading.classList.add('hidden'), 1000);
+        }, undefined, (error) => {
+            console.warn('Live Preview Notice: Online FBX file not found. Constructing procedural airway as fallback.', error);
+            elLoadingError.innerHTML = "Preview Environment: Online FBX file unavailable.<br/>Loading Procedural Airway Fallback...";
+            elLoadingError.classList.remove('hidden');
+            elLoadingError.classList.add('text-yellow-400');
+            elLoadingError.classList.remove('text-red-500');
+            
+            setTimeout(() => {
+                buildProceduralAnatomy();
+            }, 1500);
+        });
+
+        // --- Navigation & Strict Collision System ---
+        const raycaster = new THREE.Raycaster();
+        
+        // 14-Directional "Radar" check to prevent leaving the mesh and corner clipping
+        const rayDirections = [
+            new THREE.Vector3(1, 0, 0), new THREE.Vector3(-1, 0, 0),  // Left/Right
+            new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, -1, 0),  // Up/Down
+            new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 0, -1),  // Forward/Back
+            // Diagonals (Corners)
+            new THREE.Vector3(1, 1, 1).normalize(), new THREE.Vector3(1, 1, -1).normalize(),
+            new THREE.Vector3(1, -1, 1).normalize(), new THREE.Vector3(1, -1, -1).normalize(),
+            new THREE.Vector3(-1, 1, 1).normalize(), new THREE.Vector3(-1, 1, -1).normalize(),
+            new THREE.Vector3(-1, -1, 1).normalize(), new THREE.Vector3(-1, -1, -1).normalize()
+        ];
+
+        function isColliding(prevPos) {
+            if (!airwayModel) return false;
+            
+            // 1. Continuous Path Sweeping (Anti-Tunneling)
+            const moveVector = new THREE.Vector3().subVectors(camera.position, prevPos);
+            const moveDist = moveVector.length();
+            
+            if (moveDist > 0.001) {
+                raycaster.set(prevPos, moveVector.clone().normalize());
+                const intersects = raycaster.intersectObject(airwayModel, true);
+                if (intersects.length > 0 && intersects[0].distance < (moveDist + config.wallThreshold)) {
+                    return true; 
+                }
+            }
+
+            // 2. Proximity & Containment Check (14-Directional Sphere)
+            let hitCount = 0;
+            for (let dir of rayDirections) {
+                const worldDir = dir.clone().applyQuaternion(camera.quaternion).normalize();
+                raycaster.set(camera.position, worldDir);
+                
+                const intersects = raycaster.intersectObject(airwayModel, true);
+                
+                if (intersects.length > 0) {
+                    hitCount++;
+                    if (intersects[0].distance < config.wallThreshold) {
+                        return true;
+                    }
+                }
+            }
+            
+            // 3. Escape Prevention (Open Ends)
+            if (hitCount < 6) {
+                return true; 
+            }
+
+            return false;
+        }
+
+        // --- Controls Setup ---
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableZoom = false;
+        controls.enablePan = false;
+        controls.target.set(0, 0, -1); 
+        controls.update();
+
+        // Keyboard listeners
+        window.addEventListener('keydown', (e) => {
+            if (state.keys.hasOwnProperty(e.key)) state.keys[e.key] = true;
+            if (e.key.toLowerCase() === 'w') state.keys.w = true;
+            if (e.key.toLowerCase() === 'a') state.keys.a = true;
+            if (e.key.toLowerCase() === 's') state.keys.s = true;
+            if (e.key.toLowerCase() === 'd') state.keys.d = true;
+        });
+
+        window.addEventListener('keyup', (e) => {
+            if (state.keys.hasOwnProperty(e.key)) state.keys[e.key] = false;
+            if (e.key.toLowerCase() === 'w') state.keys.w = false;
+            if (e.key.toLowerCase() === 'a') state.keys.a = false;
+            if (e.key.toLowerCase() === 's') state.keys.s = false;
+            if (e.key.toLowerCase() === 'd') state.keys.d = false;
+        });
+
+        // Alignment Buttons
+        function alignCameraY() {
+            camera.position.set(0, (bboxSize.y / 2) - 5, 0); // Start slightly deeper inside
+            camera.lookAt(0, 0, 0);
+            state.startPos.copy(camera.position);
+            updateOrbitTarget();
+        }
+        function alignCameraZ() {
+            camera.position.set(0, 0, (bboxSize.z / 2) - 5); // Start slightly deeper inside
+            camera.lookAt(0, 0, 0);
+            state.startPos.copy(camera.position);
+            updateOrbitTarget();
+        }
+
+        document.getElementById('btn-reset-y').addEventListener('click', alignCameraY);
+        document.getElementById('btn-reset-z').addEventListener('click', alignCameraZ);
+
+        function updateOrbitTarget() {
+            const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+            controls.target.copy(camera.position).add(dir);
+            controls.update();
+        }
+
+        // --- Vitals Simulation ---
+        setInterval(() => {
+            state.hr += Math.floor(Math.random() * 5) - 2;
+            if(state.hr > 95) state.hr = 95;
+            if(state.hr < 60) state.hr = 60;
+            
+            if(Math.random() > 0.8) {
+                state.spo2 += Math.floor(Math.random() * 3) - 1;
+                if(state.spo2 > 100) state.spo2 = 100;
+                if(state.spo2 < 90) state.spo2 = 90;
+            }
+
+            elHr.innerHTML = `${state.hr} <span class="text-sm text-gray-300">bpm</span>`;
+            elSpo2.innerHTML = `${state.spo2} <span class="text-sm text-gray-300">%</span>`;
+        }, 2000);
+
+
+        // --- Render Loop ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            if (state.ready) {
+                const prevPos = camera.position.clone();
+                const prevQuat = camera.quaternion.clone();
+                let moved = false;
+
+                if (state.keys.w) { camera.translateZ(-config.moveSpeed); moved = true; }
+                if (state.keys.s) { camera.translateZ(config.moveSpeed); moved = true; }
+
+                if (state.keys.a || state.keys.ArrowLeft) { camera.rotateY(config.rotateSpeed); moved = true; }
+                if (state.keys.d || state.keys.ArrowRight) { camera.rotateY(-config.rotateSpeed); moved = true; }
+                if (state.keys.ArrowUp) { camera.rotateX(config.rotateSpeed); moved = true; }
+                if (state.keys.ArrowDown) { camera.rotateX(-config.rotateSpeed); moved = true; }
+
+                if (moved) {
+                    if (isColliding(prevPos)) {
+                        camera.position.copy(prevPos);
+                        camera.quaternion.copy(prevQuat);
+                        elWarning.classList.remove('hidden');
+                    } else {
+                        elWarning.classList.add('hidden');
+                        updateOrbitTarget();
+                        
+                        const distance = camera.position.distanceTo(state.startPos);
+                        elDepth.innerHTML = `${distance.toFixed(1)} <span class="text-sm text-gray-300">cm</span>`;
+                    }
+                }
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }, false);
+
+        animate();
+    </script>
+</body>
+</html>
