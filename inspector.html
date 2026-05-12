@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bronchsim — Model Inspector</title>
+<style>
+  html,body{margin:0;padding:0;height:100%;background:#000;color:#d0e4f0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;overflow:hidden;}
+  #c{display:block;width:100vw;height:100vh;cursor:crosshair;}
+  .panel{position:fixed;background:rgba(0,0,0,0.65);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);border:1px solid rgba(255,255,255,0.10);border-radius:6px;color:#d0e4f0;font-size:12px;padding:10px 12px;line-height:1.45;}
+  #help{top:12px;left:12px;max-width:280px;}
+  #help h2{margin:0 0 6px 0;font-size:13px;font-weight:600;letter-spacing:0.02em;}
+  #help .lbl{color:#4a6070;font-size:10px;text-transform:uppercase;letter-spacing:0.12em;margin-top:8px;margin-bottom:2px;}
+  #help kbd{background:rgba(255,255,255,0.10);border:1px solid rgba(255,255,255,0.15);border-radius:3px;padding:1px 5px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;}
+  #status{top:12px;right:12px;min-width:260px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;}
+  #status .row{display:flex;justify-content:space-between;gap:12px;}
+  #status .k{color:#4a6070;}
+  #marks{bottom:12px;left:12px;max-width:360px;max-height:40vh;overflow-y:auto;}
+  #marks .lbl{color:#4a6070;font-size:10px;text-transform:uppercase;letter-spacing:0.12em;margin-bottom:6px;}
+  #marklist{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;line-height:1.5;}
+  #marklist .m{display:flex;justify-content:space-between;gap:10px;border-bottom:1px solid rgba(255,255,255,0.06);padding:2px 0;}
+  #marklist .m button{background:rgba(255,255,255,0.06);color:#d0e4f0;border:1px solid rgba(255,255,255,0.10);border-radius:3px;padding:0 6px;font-size:10px;cursor:pointer;font-family:inherit;}
+  #controls{bottom:12px;right:12px;display:flex;flex-direction:column;gap:6px;}
+  #controls button{background:rgba(255,255,255,0.06);color:#d0e4f0;border:1px solid rgba(255,255,255,0.12);border-radius:5px;padding:8px 12px;font-size:12px;cursor:pointer;font-family:inherit;letter-spacing:0.02em;}
+  #controls button:hover{background:rgba(255,255,255,0.10);}
+  #loading{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#000;color:#d0e4f0;font-size:14px;letter-spacing:0.04em;}
+  #loading.gone{display:none;}
+  textarea{width:100%;height:140px;background:rgba(0,0,0,0.5);color:#d0e4f0;border:1px solid rgba(255,255,255,0.10);border-radius:4px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;padding:6px;margin-top:6px;box-sizing:border-box;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="loading">Loading model…</div>
+
+<div id="help" class="panel">
+  <h2>Model Inspector</h2>
+  <div class="lbl">Movement</div>
+  <div><kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> translate · <kbd>Q</kbd>/<kbd>E</kbd> down/up</div>
+  <div>Click + drag to look · <kbd>Shift</kbd> to move faster</div>
+  <div class="lbl">Mark waypoint</div>
+  <div>Position camera at a landmark, then press <kbd>1</kbd>–<kbd>9</kbd> or click <strong>Mark</strong>.</div>
+  <div class="lbl">View</div>
+  <div><kbd>R</kbd> reset · <kbd>L</kbd> toggle scope light / overview · <kbd>X</kbd> toggle wireframe</div>
+</div>
+
+<div id="status" class="panel">
+  <div class="row"><span class="k">pos</span><span id="sPos">—</span></div>
+  <div class="row"><span class="k">yaw / pitch</span><span id="sLook">—</span></div>
+  <div class="row"><span class="k">bbox center</span><span id="sCtr">—</span></div>
+  <div class="row"><span class="k">bbox size</span><span id="sSize">—</span></div>
+  <div class="row"><span class="k">verts / tris</span><span id="sCount">—</span></div>
+  <div class="row"><span class="k">mode</span><span id="sMode">scope light</span></div>
+</div>
+
+<div id="marks" class="panel">
+  <div class="lbl">Marked waypoints</div>
+  <div id="marklist"><em style="color:#4a6070;">none yet — fly to a landmark and press a number key.</em></div>
+  <textarea id="export" placeholder="Exported JS will appear here…" readonly></textarea>
+</div>
+
+<div id="controls">
+  <button id="bMark">Mark current position</button>
+  <button id="bClear">Clear marks</button>
+  <button id="bExport">Export waypoints</button>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/examples/js/loaders/GLTFLoader.js"></script>
+<script>
+(function(){
+  'use strict';
+
+  // ---------- LANDMARK SLOTS ----------
+  // Pressing 1-9 marks the current camera position with this name.
+  var SLOT_NAMES = [
+    'ett',       // 1
+    'trachea',   // 2
+    'carina',    // 3
+    'rmain',     // 4
+    'rul',       // 5
+    'bronchint', // 6
+    'rmiddle',   // 7
+    'rlower',    // 8
+    'lmain'      // 9
+    // (lul, llower can be added by editing here if needed)
+  ];
+  var SLOT_LABELS = {
+    ett:'ETT Tip', trachea:'Trachea (mid)', carina:'Main Carina',
+    rmain:'R. Main Bronchus', rul:'R. Upper Lobe',
+    bronchint:'Bronchus Intermedius', rmiddle:'R. Middle Lobe', rlower:'R. Lower Lobe',
+    lmain:'L. Main Bronchus', lul:'L. Upper / Lingula', llower:'L. Lower Lobe'
+  };
+
+  // ---------- THREE.JS SETUP ----------
+  var canvas = document.getElementById('c');
+  var renderer = new THREE.WebGLRenderer({canvas:canvas, antialias:true});
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setClearColor(0x000000, 1);
+
+  var scene = new THREE.Scene();
+
+  var camera = new THREE.PerspectiveCamera(72, window.innerWidth/window.innerHeight, 0.05, 10000);
+  scene.add(camera);
+
+  // Mode A: scope light (per briefing). Mode B: overview light for inspection.
+  var spot = new THREE.SpotLight(0xffffff, 4.0, 18, Math.PI*0.19, 0.60, 1.5);
+  camera.add(spot);
+  var spotTarget = new THREE.Object3D();
+  spotTarget.position.set(0, 0, -9);
+  camera.add(spotTarget);
+  spot.target = spotTarget;
+
+  var ambient = new THREE.AmbientLight(0x080606, 0.10);
+  scene.add(ambient);
+
+  // Overview lights (off by default)
+  var overviewKey = new THREE.DirectionalLight(0xffffff, 0.9);
+  overviewKey.position.set(1, 2, 1);
+  overviewKey.visible = false;
+  scene.add(overviewKey);
+  var overviewFill = new THREE.DirectionalLight(0xb0c0d0, 0.4);
+  overviewFill.position.set(-1, -1, -1);
+  overviewFill.visible = false;
+  scene.add(overviewFill);
+
+  // Fog matches briefing for scope mode; cleared in overview mode
+  var scopeFog = new THREE.FogExp2(0x000000, 0.016);
+  scene.fog = scopeFog;
+
+  // ---------- LOAD MODEL ----------
+  var modelRoot = null;
+  var modelMaterial = new THREE.MeshStandardMaterial({
+    color: 0xd49585,        // pale salmon base
+    roughness: 0.85,
+    metalness: 0.0,
+    side: THREE.DoubleSide, // model is double-sided; this lets us see from inside or outside
+    emissive: 0x000000,
+    emissiveIntensity: 0.0,
+    wireframe: false
+  });
+
+  var bboxCenter = new THREE.Vector3();
+  var bboxSize = new THREE.Vector3();
+  var totalVerts = 0, totalTris = 0;
+
+  var loader = new THREE.GLTFLoader();
+  loader.load('assets/tracheobronchial_tree.glb', function(gltf){
+    modelRoot = gltf.scene;
+    modelRoot.traverse(function(obj){
+      if (obj.isMesh){
+        obj.material = modelMaterial;
+        var g = obj.geometry;
+        if (g.attributes && g.attributes.position){
+          totalVerts += g.attributes.position.count;
+        }
+        if (g.index){
+          totalTris += g.index.count / 3;
+        } else if (g.attributes && g.attributes.position){
+          totalTris += g.attributes.position.count / 3;
+        }
+      }
+    });
+
+    // Recenter on origin and compute bbox
+    var box = new THREE.Box3().setFromObject(modelRoot);
+    box.getCenter(bboxCenter);
+    box.getSize(bboxSize);
+    // Move geometry so the bbox center is at the origin
+    modelRoot.position.sub(bboxCenter);
+    scene.add(modelRoot);
+
+    // After recentering, bbox is now centered on origin
+    bboxCenter.set(0,0,0);
+
+    document.getElementById('sCount').textContent = totalVerts.toLocaleString() + ' / ' + totalTris.toLocaleString();
+    document.getElementById('sCtr').textContent = bboxCenter.x.toFixed(1)+','+bboxCenter.y.toFixed(1)+','+bboxCenter.z.toFixed(1);
+    document.getElementById('sSize').textContent = bboxSize.x.toFixed(1)+' × '+bboxSize.y.toFixed(1)+' × '+bboxSize.z.toFixed(1);
+
+    // Place camera at the top of the bbox (likely near the trachea entrance), looking down -Y or -Z
+    // We don't know orientation yet — start at +Y top of bbox, look at center
+    camera.position.set(0, bboxSize.y * 0.5, 0);
+    camera.lookAt(0, 0, 0);
+    yaw = Math.atan2(-(camera.position.x - 0), -(camera.position.z - 0)); // 0 facing -Z
+    pitch = Math.asin((camera.position.y - 0) / camera.position.length()) * -1; // looking down
+
+    // Scale movement speed to model size
+    moveSpeed = Math.max(bboxSize.x, bboxSize.y, bboxSize.z) * 0.004;
+
+    document.getElementById('loading').classList.add('gone');
+  },
+  function(prog){
+    if (prog.lengthComputable){
+      var pct = Math.round(100 * prog.loaded / prog.total);
+      document.getElementById('loading').textContent = 'Loading model… ' + pct + '%';
+    }
+  },
+  function(err){
+    document.getElementById('loading').textContent = 'Error loading model: ' + err.message;
+    document.getElementById('loading').style.color = '#ff8080';
+  });
+
+  // ---------- FLY CONTROLS ----------
+  var yaw = 0;        // rotation around Y axis (left/right look)
+  var pitch = 0;      // rotation around X axis (up/down look)
+  var keys = {};
+  var moveSpeed = 0.5;
+  var lookSpeed = 0.003;
+  var dragging = false;
+  var lastX = 0, lastY = 0;
+
+  canvas.addEventListener('mousedown', function(e){ dragging = true; lastX = e.clientX; lastY = e.clientY; });
+  window.addEventListener('mouseup',   function(){ dragging = false; });
+  window.addEventListener('mousemove', function(e){
+    if (!dragging) return;
+    var dx = e.clientX - lastX, dy = e.clientY - lastY;
+    lastX = e.clientX; lastY = e.clientY;
+    yaw -= dx * lookSpeed;
+    pitch -= dy * lookSpeed;
+    var lim = Math.PI/2 - 0.01;
+    if (pitch > lim) pitch = lim;
+    if (pitch < -lim) pitch = -lim;
+  });
+
+  window.addEventListener('keydown', function(e){
+    var k = e.key.toLowerCase();
+    keys[k] = true;
+
+    // Number keys -> mark waypoint
+    if (e.key >= '1' && e.key <= '9'){
+      var idx = parseInt(e.key,10) - 1;
+      if (idx < SLOT_NAMES.length){
+        markWaypoint(SLOT_NAMES[idx]);
+        e.preventDefault();
+      }
+    }
+    if (k === 'r'){ resetCamera(); e.preventDefault(); }
+    if (k === 'l'){ toggleMode(); e.preventDefault(); }
+    if (k === 'x'){ modelMaterial.wireframe = !modelMaterial.wireframe; e.preventDefault(); }
+  });
+  window.addEventListener('keyup', function(e){ keys[e.key.toLowerCase()] = false; });
+
+  function resetCamera(){
+    if (!modelRoot) return;
+    camera.position.set(0, bboxSize.y * 0.5, 0);
+    yaw = 0; pitch = -Math.PI/2;
+  }
+
+  var scopeMode = true;
+  function toggleMode(){
+    scopeMode = !scopeMode;
+    spot.visible = scopeMode;
+    ambient.intensity = scopeMode ? 0.10 : 0.0;
+    overviewKey.visible = !scopeMode;
+    overviewFill.visible = !scopeMode;
+    scene.fog = scopeMode ? scopeFog : null;
+    document.getElementById('sMode').textContent = scopeMode ? 'scope light' : 'overview';
+  }
+
+  // ---------- WAYPOINT MARKING ----------
+  var marks = {}; // key -> {pos:[x,y,z], dir:[x,y,z]}
+
+  function markWaypoint(key){
+    var dir = new THREE.Vector3();
+    camera.getWorldDirection(dir);
+    marks[key] = {
+      pos: [camera.position.x, camera.position.y, camera.position.z],
+      dir: [dir.x, dir.y, dir.z]
+    };
+    renderMarks();
+  }
+  function renderMarks(){
+    var keys = Object.keys(marks);
+    var el = document.getElementById('marklist');
+    if (keys.length === 0){
+      el.innerHTML = '<em style="color:#4a6070;">none yet — fly to a landmark and press a number key.</em>';
+      document.getElementById('export').value = '';
+      return;
+    }
+    var html = '';
+    var orderedKeys = SLOT_NAMES.filter(function(k){ return marks[k]; }).concat(
+      keys.filter(function(k){ return SLOT_NAMES.indexOf(k) === -1; })
+    );
+    orderedKeys.forEach(function(k){
+      var m = marks[k];
+      var label = SLOT_LABELS[k] || k;
+      html += '<div class="m"><span>'+label+'<br><span style="color:#4a6070;">('+m.pos[0].toFixed(2)+', '+m.pos[1].toFixed(2)+', '+m.pos[2].toFixed(2)+')</span></span>' +
+              '<span><button data-go="'+k+'">go</button> <button data-del="'+k+'">×</button></span></div>';
+    });
+    el.innerHTML = html;
+    el.querySelectorAll('button[data-go]').forEach(function(b){
+      b.onclick = function(){ var k = b.getAttribute('data-go'); var m = marks[k]; camera.position.set(m.pos[0],m.pos[1],m.pos[2]); };
+    });
+    el.querySelectorAll('button[data-del]').forEach(function(b){
+      b.onclick = function(){ var k = b.getAttribute('data-del'); delete marks[k]; renderMarks(); };
+    });
+    exportWaypoints();
+  }
+  function exportWaypoints(){
+    var lines = ['// Waypoints recorded in inspector. Paste into bronchsim.html.'];
+    lines.push('var PATH = [');
+    var orderedKeys = SLOT_NAMES.filter(function(k){ return marks[k]; });
+    orderedKeys.forEach(function(k){
+      var m = marks[k];
+      var label = SLOT_LABELS[k] || k;
+      lines.push("  {key:'"+k+"', name:'"+label+"', pos:["+m.pos[0].toFixed(3)+", "+m.pos[1].toFixed(3)+", "+m.pos[2].toFixed(3)+"]},");
+    });
+    lines.push('];');
+    document.getElementById('export').value = lines.join('\n');
+  }
+
+  document.getElementById('bMark').onclick = function(){
+    // Find next unused slot
+    for (var i = 0; i < SLOT_NAMES.length; i++){
+      if (!marks[SLOT_NAMES[i]]){ markWaypoint(SLOT_NAMES[i]); return; }
+    }
+    alert('All slots filled. Delete one or press a number key to overwrite.');
+  };
+  document.getElementById('bClear').onclick = function(){
+    if (confirm('Clear all marked waypoints?')){ marks = {}; renderMarks(); }
+  };
+  document.getElementById('bExport').onclick = function(){
+    var ta = document.getElementById('export');
+    ta.select();
+    document.execCommand('copy');
+    document.getElementById('bExport').textContent = 'Copied ✓';
+    setTimeout(function(){ document.getElementById('bExport').textContent = 'Export waypoints'; }, 1200);
+  };
+
+  // ---------- RESIZE ----------
+  window.addEventListener('resize', function(){
+    camera.aspect = window.innerWidth/window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  // ---------- RENDER LOOP ----------
+  var sPos = document.getElementById('sPos');
+  var sLook = document.getElementById('sLook');
+
+  function animate(){
+    requestAnimationFrame(animate);
+
+    // Apply yaw/pitch to camera
+    var euler = new THREE.Euler(pitch, yaw, 0, 'YXZ');
+    camera.quaternion.setFromEuler(euler);
+
+    // Movement in camera-local axes
+    var speed = moveSpeed * (keys['shift'] ? 4 : 1);
+    var forward = new THREE.Vector3();
+    camera.getWorldDirection(forward);
+    var right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0,1,0)).normalize();
+
+    if (keys['w']) camera.position.addScaledVector(forward, speed);
+    if (keys['s']) camera.position.addScaledVector(forward, -speed);
+    if (keys['a']) camera.position.addScaledVector(right, -speed);
+    if (keys['d']) camera.position.addScaledVector(right, speed);
+    if (keys['e']) camera.position.y += speed;
+    if (keys['q']) camera.position.y -= speed;
+
+    // Status readout
+    sPos.textContent = camera.position.x.toFixed(2)+', '+camera.position.y.toFixed(2)+', '+camera.position.z.toFixed(2);
+    sLook.textContent = (yaw*180/Math.PI).toFixed(0)+'° / '+(pitch*180/Math.PI).toFixed(0)+'°';
+
+    renderer.render(scene, camera);
+  }
+  animate();
+})();
+</script>
+</body>
+</html>

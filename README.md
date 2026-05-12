@@ -23,7 +23,10 @@ The host is intentionally separate from the repo — GitHub Pages is not used he
 
 ```
 .
-├── bronchsim.html              # The entire app — single file, self-contained
+├── bronchsim.html              # The deployable app — single file, self-contained
+├── inspector.html              # Dev-only model inspector (free-fly camera, waypoint marker)
+├── assets/
+│   └── tracheobronchial_tree.glb   # 3D airway model (5 MB)
 ├── README.md                   # This file
 ├── CHANGELOG.md                # Human-readable record of meaningful changes
 ├── docs/
@@ -31,6 +34,19 @@ The host is intentionally separate from the repo — GitHub Pages is not used he
 │   └── anatomy-reference.md    # Clinical anatomy notes (optional, for content edits)
 └── .gitignore
 ```
+
+## Running locally (required for GLB loading)
+
+Browsers block `fetch()` of local files when an HTML page is opened via `file://`. To load the GLB asset, serve the repo over local HTTP:
+
+```
+cd <repo root>
+python3 -m http.server 8000
+```
+
+Then open `http://localhost:8000/inspector.html` (or `bronchsim.html`).
+
+This is a development concern only. When deployed to a real host, the GLB loads normally over HTTPS.
 
 ## Constraints (locked)
 
