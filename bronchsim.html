@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bronchoscopy Simulator</title>
+<style>
+  html,body{margin:0;padding:0;height:100%;background:#000;color:#d0e4f0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;overflow:hidden;}
+  #c{display:block;width:100vw;height:100vh;}
+  .hud{position:fixed;background:rgba(0,0,0,0.5);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);border:1px solid rgba(255,255,255,0.08);border-radius:6px;color:#d0e4f0;font-size:13px;letter-spacing:0.02em;}
+  #loc{top:12px;left:12px;padding:8px 12px;font-weight:600;}
+  #loc .lbl{color:#4a6070;font-weight:400;font-size:10px;text-transform:uppercase;letter-spacing:0.12em;display:block;margin-bottom:2px;}
+  #vitals{bottom:12px;left:12px;right:12px;padding:10px 14px;display:flex;align-items:center;gap:18px;}
+  #vitals .v{display:flex;flex-direction:column;line-height:1.1;}
+  #vitals .v .lbl{color:#4a6070;font-size:10px;text-transform:uppercase;letter-spacing:0.12em;}
+  #vitals .v .val{font-size:18px;font-weight:600;color:#d0e4f0;}
+  #vitals .v.spo2 .val{color:#7fd3a3;}
+  #vitals .spacer{flex:1;}
+  #vitals button{background:rgba(255,255,255,0.06);color:#d0e4f0;border:1px solid rgba(255,255,255,0.12);border-radius:5px;padding:10px 14px;font-size:13px;font-weight:500;cursor:pointer;min-height:44px;letter-spacing:0.02em;font-family:inherit;}
+  #vitals button:hover{background:rgba(255,255,255,0.10);}
+  #vitals button:active{background:rgba(255,255,255,0.14);}
+  #map{position:fixed;top:12px;right:12px;width:150px;height:114px;}
+  #map svg{display:block;width:100%;height:100%;background:rgba(0,0,0,0.5);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);border:1px solid rgba(255,255,255,0.08);border-radius:6px;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="loc" class="hud"><span class="lbl">Location</span><span id="locname">ETT Tip</span></div>
+
+<div id="map">
+  <svg viewBox="0 0 150 114" xmlns="http://www.w3.org/2000/svg">
+    <!-- airway schematic -->
+    <line x1="75" y1="8"  x2="75" y2="50" stroke="#4a6070" stroke-width="3" stroke-linecap="round"/>
+    <line x1="75" y1="50" x2="110" y2="78" stroke="#4a6070" stroke-width="2.5" stroke-linecap="round"/>
+    <line x1="75" y1="50" x2="40" y2="80"  stroke="#4a6070" stroke-width="2.2" stroke-linecap="round"/>
+    <line x1="110" y1="78" x2="120" y2="62" stroke="#4a6070" stroke-width="1.6" stroke-linecap="round"/>
+    <line x1="110" y1="78" x2="118" y2="98" stroke="#4a6070" stroke-width="1.6" stroke-linecap="round"/>
+    <line x1="40" y1="80"  x2="32" y2="98" stroke="#4a6070" stroke-width="1.6" stroke-linecap="round"/>
+    <circle id="mapdot" cx="75" cy="8" r="4" fill="#7fd3a3"/>
+  </svg>
+</div>
+
+<div id="vitals" class="hud">
+  <div class="v spo2"><span class="lbl">SpO₂</span><span class="val" id="spo2">98%</span></div>
+  <div class="v"><span class="lbl">HR</span><span class="val" id="hr">82</span></div>
+  <div class="spacer"></div>
+  <button id="bBack">↓ Retract</button>
+  <button id="bFwd">↑ Advance</button>
+  <button id="bSuc">○ Suction</button>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function(){
+  'use strict';
+
+  // ---------- WAYPOINTS (right lung, anatomically ordered) ----------
+  var PATH_R = [
+    {key:'ett',       name:'ETT Tip',              pos:[ 0.00,  0.00,   0.00], r:1.30, map:[75,  8]},
+    {key:'trachea',   name:'Trachea',              pos:[ 0.02,  0.00,  -5.50], r:1.28, map:[75, 30]},
+    {key:'carina',    name:'Main Carina',          pos:[ 0.05, -0.05, -11.00], r:1.20, map:[75, 50]},
+    {key:'rmain',     name:'R. Main Bronchus',     pos:[ 1.10, -0.10, -14.00], r:1.02, map:[92, 64]},
+    {key:'rul',       name:'R. Upper Lobe',        pos:[ 1.40,  0.70, -16.50], r:0.68, map:[120,62]},
+    {key:'bronchint', name:'Bronchus Intermedius', pos:[ 1.55, -0.30, -18.00], r:0.88, map:[108,75]},
+    {key:'rmiddle',   name:'R. Middle Lobe',       pos:[ 1.10, -0.55, -20.00], r:0.58, map:[112,88]},
+    {key:'rlower',    name:'R. Lower Lobe',        pos:[ 1.30, -1.20, -22.50], r:0.76, map:[118,98]}
+  ];
+
+  // ---------- THREE.JS SETUP ----------
+  var canvas = document.getElementById('c');
+  var renderer = new THREE.WebGLRenderer({canvas:canvas, antialias:true});
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setClearColor(0x000000, 1);
+
+  var scene = new THREE.Scene();
+  scene.fog = new THREE.FogExp2(0x000000, 0.016);
+
+  var camera = new THREE.PerspectiveCamera(72, window.innerWidth/window.innerHeight, 0.05, 200);
+  camera.position.set(0, 0, 0);
+  scene.add(camera);
+
+  // ---------- LIGHTING (locked values from briefing) ----------
+  scene.add(new THREE.AmbientLight(0x080606, 0.10));
+
+  var spot = new THREE.SpotLight(0xffffff, 4.0, 18, Math.PI*0.19, 0.60, 1.5);
+  camera.add(spot);
+  spot.position.set(0,0,0);
+  var spotTarget = new THREE.Object3D();
+  spotTarget.position.set(0, 0, -9);
+  camera.add(spotTarget);
+  spot.target = spotTarget;
+
+  // ---------- MUCOSA COLOUR ----------
+  function mucosaColor(t){
+    // t=0 proximal (pale salmon) -> t=1 distal (deeper pink-red)
+    return [
+      0.84 - t*0.28,
+      0.58 - t*0.28,
+      0.50 - t*0.24
+    ];
+  }
+
+  // ---------- BUILD TUBE SEGMENTS ----------
+  // One CylinderGeometry per consecutive waypoint pair. No TubeGeometry, no Catmull.
+  // Vertex colours bake mucosa gradient + ring banding (trachea only).
+  function buildSegment(wp0, wp1, idx, total, isTrachea){
+    var p0 = new THREE.Vector3(wp0.pos[0], wp0.pos[1], wp0.pos[2]);
+    var p1 = new THREE.Vector3(wp1.pos[0], wp1.pos[1], wp1.pos[2]);
+    var dir = new THREE.Vector3().subVectors(p1, p0);
+    var len = dir.length();
+
+    // Radial 24, length 12. Open-ended so we don't see end caps.
+    var geo = new THREE.CylinderGeometry(wp1.r, wp0.r, len, 24, 12, true);
+
+    // Vertex colours -- read raw .array (r128 quirk: posArr.getX/getZ are read-only here)
+    var posArr = geo.attributes.position.array;
+    var nVerts = posArr.length / 3;
+    var colors = new Float32Array(nVerts * 3);
+
+    // Cylinder is built along +Y in local space, centered at origin.
+    // Local y goes from -len/2 (bottom = wp0) to +len/2 (top = wp1).
+    for (var i = 0; i < nVerts; i++){
+      var ly = posArr[i*3 + 1]; // local y
+      var localT = (ly + len/2) / len; // 0 at wp0, 1 at wp1
+      // Global depth along path for mucosa gradient
+      var globalT = (idx + localT) / total;
+      var c = mucosaColor(globalT);
+      var r = c[0], g = c[1], b = c[2];
+
+      // Ring banding on trachea only -- bake into vertex colours, NEVER separate geometry
+      if (isTrachea){
+        var bandPos = (localT * 12 + idx*0.5) % 1.0;
+        var dark = bandPos < 0.08 ? 0.62 : 1.0;
+        r *= dark; g *= dark; b *= dark;
+      }
+
+      colors[i*3]   = r;
+      colors[i*3+1] = g;
+      colors[i*3+2] = b;
+    }
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+    var mat = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      side: THREE.BackSide,    // we're inside the tube
+      roughness: 0.85,
+      metalness: 0.0,
+      emissive: 0x000000,
+      emissiveIntensity: 0.0   // briefing: never exceed 0.05
+    });
+
+    var mesh = new THREE.Mesh(geo, mat);
+    // Position at midpoint between the two waypoints
+    mesh.position.addVectors(p0, p1).multiplyScalar(0.5);
+    // Orient so local +Y aligns with (p1 - p0)
+    mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir.clone().normalize());
+    scene.add(mesh);
+    return mesh;
+  }
+
+  var segments = [];
+  for (var i = 0; i < PATH_R.length - 1; i++){
+    // "Trachea" segments are the first two (ett->trachea, trachea->carina)
+    var isTrachea = i < 2;
+    segments.push(buildSegment(PATH_R[i], PATH_R[i+1], i, PATH_R.length-1, isTrachea));
+  }
+
+  // ---------- NAVIGATION ----------
+  var currentIdx = 0;          // index of waypoint camera is currently sitting at
+  var targetIdx = 0;           // index camera is moving toward
+  var targetPos = new THREE.Vector3(0,0,0);
+  var lookTarget = new THREE.Vector3();
+
+  function setTarget(idx){
+    idx = Math.max(0, Math.min(PATH_R.length - 1, idx));
+    targetIdx = idx;
+    var wp = PATH_R[idx];
+    targetPos.set(wp.pos[0], wp.pos[1], wp.pos[2]);
+    document.getElementById('locname').textContent = wp.name;
+    var dot = document.getElementById('mapdot');
+    if (dot){ dot.setAttribute('cx', wp.map[0]); dot.setAttribute('cy', wp.map[1]); }
+  }
+
+  window.NAV = {
+    fwd:    function(){ setTarget(targetIdx + 1); },
+    back:   function(){ setTarget(targetIdx - 1); },
+    suction:function(){ triggerSuction(); }
+  };
+
+  document.getElementById('bFwd').addEventListener('click', NAV.fwd);
+  document.getElementById('bBack').addEventListener('click', NAV.back);
+  document.getElementById('bSuc').addEventListener('click', NAV.suction);
+
+  window.addEventListener('keydown', function(e){
+    if (e.key === 'w' || e.key === 'ArrowUp')   { NAV.fwd();  e.preventDefault(); }
+    if (e.key === 's' || e.key === 'ArrowDown') { NAV.back(); e.preventDefault(); }
+    if (e.key === ' ')                          { NAV.suction(); e.preventDefault(); }
+  });
+
+  // ---------- SUCTION (placeholder visual: brief SpO2 dip) ----------
+  var suctionUntil = 0;
+  function triggerSuction(){ suctionUntil = performance.now() + 1800; }
+
+  // ---------- VITALS ----------
+  var spo2El = document.getElementById('spo2');
+  var hrEl = document.getElementById('hr');
+
+  // ---------- RESIZE ----------
+  window.addEventListener('resize', function(){
+    camera.aspect = window.innerWidth/window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  // ---------- RENDER LOOP ----------
+  var clock = new THREE.Clock();
+  setTarget(0);
+  // Look slightly ahead at start
+  var nextPos = new THREE.Vector3(PATH_R[1].pos[0], PATH_R[1].pos[1], PATH_R[1].pos[2]);
+
+  function animate(){
+    requestAnimationFrame(animate);
+    var t = clock.getElapsedTime();
+    var now = performance.now();
+
+    // Camera position lerp
+    camera.position.lerp(targetPos, 0.07);
+
+    // Breathing sway
+    camera.position.x += Math.sin(t*0.22)*0.012;
+    camera.position.y += Math.sin(t*0.17)*0.008;
+
+    // Look toward next waypoint (or, at the end, keep prior heading)
+    var lookIdx = Math.min(targetIdx + 1, PATH_R.length - 1);
+    if (lookIdx === targetIdx && targetIdx > 0){
+      // At terminal waypoint -- look from prior toward current direction extended
+      var prev = PATH_R[targetIdx - 1].pos;
+      var cur = PATH_R[targetIdx].pos;
+      lookTarget.set(cur[0] + (cur[0]-prev[0]), cur[1] + (cur[1]-prev[1]), cur[2] + (cur[2]-prev[2]));
+    } else {
+      var lp = PATH_R[lookIdx].pos;
+      lookTarget.set(lp[0], lp[1], lp[2]);
+    }
+    camera.lookAt(lookTarget);
+
+    // LED flicker (never exceeds 4.5)
+    spot.intensity = 4.0 + Math.sin(t*2.0)*0.14 + Math.sin(t*7.1)*0.05;
+
+    // Vitals: small natural variability + suction dip
+    if (Math.floor(t*2) % 2 === 0){
+      var baseHR = 82 + Math.round(Math.sin(t*0.4)*3);
+      hrEl.textContent = String(baseHR);
+      var baseSpO2 = 98;
+      if (now < suctionUntil) baseSpO2 = 94 + Math.round(Math.sin(t*3)*1);
+      spo2El.textContent = baseSpO2 + '%';
+    }
+
+    renderer.render(scene, camera);
+  }
+  animate();
+})();
+</script>
+</body>
+</html>
